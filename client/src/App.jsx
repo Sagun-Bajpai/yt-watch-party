@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Check, Clapperboard, Copy, Radio, Users, Video } from 'lucide-react'
 import { io } from 'socket.io-client'
 import './App.css'
+import Player from './Player.jsx'
 
 const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000'
 
@@ -25,9 +26,13 @@ function App() {
   const [roomCode, setRoomCode] = useState('')
   const [roomId, setRoomId] = useState('')
   const [participants, setParticipants] = useState([])
+  const [playerVideoId, setPlayerVideoId] = useState('')
+  const [playbackState, setPlaybackState] = useState(null)
+  const [playerCommand, setPlayerCommand] = useState(null)
   const [connection, setConnection] = useState('connecting')
   const [toast, setToast] = useState('')
   const [copied, setCopied] = useState(false)
+  const commandRevision = useRef(0)
 
   useEffect(() => {
     const showError = (error) => {
@@ -41,10 +46,37 @@ function App() {
     const handleCreated = (payload) => {
       setRoomId(payload.roomId)
       setParticipants(payload.participants || [])
+      setPlayerVideoId('')
+      setPlaybackState(null)
+      setPlayerCommand(null)
     }
     const handleSync = (payload) => {
       setRoomId(payload.roomId)
       setParticipants(payload.participants || [])
+      setPlayerVideoId(payload.state?.videoId || '')
+      setPlaybackState(payload.state || null)
+      setPlayerCommand({
+        event: 'sync_state',
+        state: payload.state,
+        revision: ++commandRevision.current,
+      })
+    }
+    const handlePlayback = (event) => (payload) => {
+      setPlayerVideoId((current) => current || payload?.videoId || '')
+      setPlaybackState(payload)
+      setPlayerCommand({
+        event,
+        state: payload,
+        revision: ++commandRevision.current,
+      })
+    }
+    const handleRemovedFromRoom = () => {
+      setRoomId('')
+      setParticipants([])
+      setPlayerVideoId('')
+      setPlaybackState(null)
+      setPlayerCommand(null)
+      setToast('You were removed from the room.')
     }
 
     socket.on('connect', () => setConnection('connected'))
@@ -57,13 +89,18 @@ function App() {
     socket.on('user_left', updateParticipants)
     socket.on('role_assigned', updateParticipants)
     socket.on('participant_removed', updateParticipants)
+    socket.on('removed_from_room', handleRemovedFromRoom)
+    socket.on('play', handlePlayback('play'))
+    socket.on('pause', handlePlayback('pause'))
+    socket.on('seek', handlePlayback('seek'))
+    socket.on('change_video', handlePlayback('change_video'))
     socket.connect()
 
     return () => {
       socket.removeAllListeners()
       socket.disconnect()
     }
-  }, [socket])
+  }, [commandRevision, socket])
 
   useEffect(() => {
     if (!toast) return undefined
@@ -117,10 +154,17 @@ function App() {
   }
 
   const leaveRoom = () => {
-    socket.disconnect()
-    setRoomId('')
-    setParticipants([])
-    socket.connect()
+    socket.emit('leave_room', { roomId }, (response) => {
+      if (response?.error) {
+        setToast(response.error)
+        return
+      }
+      setRoomId('')
+      setParticipants([])
+      setPlayerVideoId('')
+      setPlaybackState(null)
+      setPlayerCommand(null)
+    })
   }
 
   return (
@@ -141,43 +185,46 @@ function App() {
         </header>
 
         {roomId ? (
-          <section className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-center py-12">
-            <button
-              type="button"
-              onClick={leaveRoom}
-              className="mb-7 inline-flex w-fit items-center gap-2 text-sm font-medium text-slate-400 transition hover:text-white"
-            >
-              <ArrowLeft size={16} /> Back to lobby
-            </button>
-            <div className="panel overflow-hidden rounded-3xl">
-              <div className="border-b border-white/[0.07] p-6 sm:p-8">
-                <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-center">
-                  <div>
-                    <div className="mb-3 flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/15 bg-emerald-400/[0.07] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-300">
-                        <Radio size={13} /> Watch party live
-                      </span>
-                      {myUser && <RoleBadge role={myUser.role} />}
-                    </div>
-                    <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">Your room is ready.</h1>
-                    <p className="mt-2 text-sm text-slate-400">Share the code and bring everyone together.</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={copyRoomCode}
-                    className="group flex items-center justify-between gap-5 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-left transition hover:border-violet-300/30"
-                    aria-label="Copy room code"
-                  >
-                    <span>
-                      <span className="block text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Room code</span>
-                      <span className="mt-1 block font-mono text-xl font-bold tracking-[0.2em] text-white">{roomId}</span>
-                    </span>
-                    <span className="text-violet-300">{copied ? <Check size={17} /> : <Copy size={17} />}</span>
-                  </button>
-                </div>
+          <section className="mx-auto flex w-full max-w-6xl flex-1 flex-col justify-center py-8">
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+              <button
+                type="button"
+                onClick={leaveRoom}
+                className="inline-flex items-center gap-2 text-sm font-medium text-slate-400 transition hover:text-white"
+              >
+                <ArrowLeft size={16} /> Back to lobby
+              </button>
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/15 bg-emerald-400/[0.07] px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-300">
+                  <Radio size={13} /> Watch party live
+                </span>
+                {myUser && <RoleBadge role={myUser.role} />}
+                <button
+                  type="button"
+                  onClick={copyRoomCode}
+                  className="group inline-flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3.5 py-2 text-left transition hover:border-violet-300/30"
+                  aria-label="Copy room code"
+                >
+                  <span>
+                    <span className="block text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-500">Room code</span>
+                    <span className="block font-mono text-sm font-bold tracking-[0.2em] text-white">{roomId}</span>
+                  </span>
+                  <span className="text-violet-300">{copied ? <Check size={15} /> : <Copy size={15} />}</span>
+                </button>
               </div>
+            </div>
 
-              <div className="p-6 sm:p-8">
+            <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <Player
+                socket={socket}
+                roomId={roomId}
+                role={myUser?.role || 'Participant'}
+                videoId={playerVideoId}
+                playbackState={playbackState}
+                command={playerCommand}
+                onError={setToast}
+              />
+              <aside className="panel rounded-3xl p-5 sm:p-6">
                 <div className="mb-5 flex items-center justify-between">
                   <div>
                     <h2 className="font-semibold text-white">In this room</h2>
@@ -191,7 +238,7 @@ function App() {
                   {participants.map((participant) => (
                     <div
                       key={participant.id}
-                      className="flex items-center justify-between gap-4 rounded-2xl border border-white/[0.055] bg-white/[0.025] px-4 py-3.5"
+                      className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.055] bg-white/[0.025] px-3 py-3"
                     >
                       <div className="flex min-w-0 items-center gap-3">
                         <span className="avatar">{participant.username?.trim()?.[0]?.toUpperCase() || '?'}</span>
@@ -212,7 +259,7 @@ function App() {
                     </p>
                   )}
                 </div>
-              </div>
+              </aside>
             </div>
           </section>
         ) : (
