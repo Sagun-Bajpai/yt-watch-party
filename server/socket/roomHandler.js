@@ -54,7 +54,13 @@ function registerRoomHandlers(io, socket, roomManager) {
     }
   };
 
-  const emitParticipants = (room) => room.getParticipantsList();
+  const assertIsHost = (room) => {
+    if (room.hostId !== socket.id) {
+      throw new Error("Only the host can perform this action.");
+    }
+  };
+
+  const getParticipants = (room) => room.getParticipantsList();
 
   const updatePlaybackState = (room, changes) => {
     room.videoState = {
@@ -72,7 +78,7 @@ function registerRoomHandlers(io, socket, roomManager) {
     const response = {
       roomId: room.roomId,
       user,
-      participants: emitParticipants(room),
+      participants: getParticipants(room),
     };
     socket.emit("room_created", response);
     return response;
@@ -80,6 +86,9 @@ function registerRoomHandlers(io, socket, roomManager) {
 
   socket.on("join_room", run((payload) => {
     const room = getRoom(payload.roomId || payload.code);
+    if (room.participants.has(socket.id)) {
+      throw new Error("You are already in this room.");
+    }
     const user = createUser(payload.username);
     room.addParticipant(user);
     socket.join(room.roomId);
@@ -87,9 +96,9 @@ function registerRoomHandlers(io, socket, roomManager) {
     socket.emit("sync_state", {
       roomId: room.roomId,
       state: room.getCurrentState(),
-      participants: emitParticipants(room),
+      participants: getParticipants(room),
     });
-    const participants = emitParticipants(room);
+    const participants = getParticipants(room);
     io.to(room.roomId).emit("user_joined", { user, participants });
     return { roomId: room.roomId, user, participants };
   }));
@@ -149,9 +158,9 @@ function registerRoomHandlers(io, socket, roomManager) {
 
   socket.on("assign_role", run((payload) => {
     const room = getRoom(payload.roomId);
-    assertCanControl(room);
+    assertIsHost(room);
     room.assignRole(socket.id, payload.targetId, payload.newRole);
-    const participants = emitParticipants(room);
+    const participants = getParticipants(room);
     io.to(room.roomId).emit("role_assigned", {
       targetId: payload.targetId,
       role: payload.newRole,
@@ -162,16 +171,17 @@ function registerRoomHandlers(io, socket, roomManager) {
 
   socket.on("remove_participant", run((payload) => {
     const room = getRoom(payload.roomId);
-    assertCanControl(room);
+    assertIsHost(room);
     const removed = room.removeByHost(socket.id, payload.targetId);
     const targetSocket = io.sockets && io.sockets.sockets
       ? io.sockets.sockets.get(removed.socketId)
       : null;
     if (targetSocket) {
+      targetSocket.emit("removed_from_room", { roomId: room.roomId });
       targetSocket.leave(room.roomId);
     }
     roomManager.deleteIfEmpty(room.roomId);
-    const participants = emitParticipants(room);
+    const participants = getParticipants(room);
     io.to(room.roomId).emit("participant_removed", {
       userId: removed.id,
       participants,
@@ -181,12 +191,24 @@ function registerRoomHandlers(io, socket, roomManager) {
 
   socket.on("transfer_host", run((payload) => {
     const room = getRoom(payload.roomId);
-    assertCanControl(room);
+    assertIsHost(room);
     room.transferHost(socket.id, payload.targetId);
-    const participants = emitParticipants(room);
+    const participants = getParticipants(room);
     io.to(room.roomId).emit("role_assigned", {
       targetId: payload.targetId,
       role: "Host",
+      participants,
+    });
+    return { participants };
+  }));
+
+  socket.on("leave_room", run((payload) => {
+    const room = getRoom(payload.roomId);
+    const user = roomManager.removeParticipant(room.roomId, socket.id);
+    socket.leave(room.roomId);
+    const participants = getParticipants(room);
+    io.to(room.roomId).emit("user_left", {
+      userId: user.id,
       participants,
     });
     return { participants };
@@ -201,7 +223,7 @@ function registerRoomHandlers(io, socket, roomManager) {
 
       try {
         roomManager.removeParticipant(room.roomId, user.id);
-        const participants = emitParticipants(room);
+        const participants = getParticipants(room);
         io.to(room.roomId).emit("user_left", {
           userId: user.id,
           participants,
