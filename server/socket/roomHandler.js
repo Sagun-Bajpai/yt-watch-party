@@ -217,6 +217,7 @@ function registerRoomHandlers(io, socket, roomManager) {
       roomId: room.roomId,
       state: room.getCurrentState(),
       participants: getParticipants(room),
+      messages: room.messages,
     });
     const participants = getParticipants(room);
     io.to(room.roomId).emit("user_joined", { user, participants });
@@ -245,6 +246,38 @@ function registerRoomHandlers(io, socket, roomManager) {
     const room = getRoom(payload.roomId);
     assertCanControl(room);
     return applyChange(room, "change_video", payload);
+  }));
+
+  socket.on("send_message", run((payload) => {
+    const room = getRoom(payload.roomId);
+    const user = room.participants.get(socket.id);
+    if (!user) {
+      throw new Error("You must be in the room to send a message.");
+    }
+    if (typeof payload.text !== "string") {
+      throw new Error("Message text must be a string.");
+    }
+    const text = payload.text.trim();
+    if (!text) {
+      throw new Error("Message text cannot be empty.");
+    }
+    if (text.length > 300) {
+      throw new Error("Message text cannot exceed 300 characters.");
+    }
+
+    const message = {
+      userId: user.id,
+      username: user.username,
+      role: user.role,
+      text,
+      timestamp: Date.now(),
+    };
+    room.messages.push(message);
+    if (room.messages.length > 50) {
+      room.messages.splice(0, room.messages.length - 50);
+    }
+    io.to(room.roomId).emit("new_message", message);
+    return { message };
   }));
 
   socket.on("request_change", run((payload) => {

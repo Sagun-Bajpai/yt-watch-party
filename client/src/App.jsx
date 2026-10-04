@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Clapperboard, Copy, Radio, Users, Video } from 'lucide-react'
+import { ArrowLeft, Check, Clapperboard, Copy, MessageCircle, Radio, Send, Users, Video } from 'lucide-react'
 import { io } from 'socket.io-client'
 import './App.css'
 import Player from './Player.jsx'
@@ -23,15 +23,25 @@ function RoleBadge({ role }) {
 function App() {
   const socket = useMemo(() => io(SERVER_URL, { autoConnect: false }), [])
   const [username, setUsername] = useState('')
-  const [roomCode, setRoomCode] = useState('')
+  const [roomCode, setRoomCode] = useState(() => (
+    new URLSearchParams(window.location.search)
+      .get('room')
+      ?.trim()
+      .replace(/\s/g, '')
+      .slice(0, 6)
+      .toUpperCase() || ''
+  ))
   const [roomId, setRoomId] = useState('')
   const [participants, setParticipants] = useState([])
+  const [messages, setMessages] = useState([])
+  const [messageText, setMessageText] = useState('')
   const [playerVideoId, setPlayerVideoId] = useState('')
   const [playbackState, setPlaybackState] = useState(null)
   const [playerCommand, setPlayerCommand] = useState(null)
   const [connection, setConnection] = useState('connecting')
   const [toast, setToast] = useState('')
   const [copied, setCopied] = useState(false)
+  const [inviteCopied, setInviteCopied] = useState(false)
   const [pendingRequests, setPendingRequests] = useState([])
   const [requestStatus, setRequestStatus] = useState('')
   const myRequestId = useRef('')
@@ -49,6 +59,8 @@ function App() {
     const handleCreated = (payload) => {
       setRoomId(payload.roomId)
       setParticipants(payload.participants || [])
+      setMessages([])
+      setMessageText('')
       setPlayerVideoId('')
       setPlaybackState(null)
       setPlayerCommand(null)
@@ -59,6 +71,7 @@ function App() {
     const handleSync = (payload) => {
       setRoomId(payload.roomId)
       setParticipants(payload.participants || [])
+      setMessages(Array.isArray(payload.messages) ? payload.messages.slice(-50) : [])
       setPlayerVideoId(payload.state?.videoId || '')
       setPlaybackState(payload.state || null)
       setPlayerCommand({
@@ -76,9 +89,14 @@ function App() {
         revision: ++commandRevision.current,
       })
     }
+    const handleNewMessage = (message) => {
+      setMessages((current) => [...current, message].slice(-50))
+    }
     const handleRemovedFromRoom = () => {
       setRoomId('')
       setParticipants([])
+      setMessages([])
+      setMessageText('')
       setPlayerVideoId('')
       setPlaybackState(null)
       setPlayerCommand(null)
@@ -113,6 +131,7 @@ function App() {
     socket.on('error', showError)
     socket.on('room_created', handleCreated)
     socket.on('sync_state', handleSync)
+    socket.on('new_message', handleNewMessage)
     socket.on('user_joined', updateParticipants)
     socket.on('user_left', updateParticipants)
     socket.on('role_assigned', updateParticipants)
@@ -191,6 +210,31 @@ function App() {
     }
   }
 
+  const copyInviteLink = async () => {
+    try {
+      const inviteLink = `${window.location.origin}/?room=${encodeURIComponent(roomId)}`
+      await navigator.clipboard.writeText(inviteLink)
+      setInviteCopied(true)
+      window.setTimeout(() => setInviteCopied(false), 1800)
+    } catch {
+      setToast('Could not copy the invite link. Please try again.')
+    }
+  }
+
+  const sendMessage = (event) => {
+    event.preventDefault()
+    const text = messageText.trim()
+    if (!text) return
+
+    socket.emit('send_message', { roomId, text }, (response) => {
+      if (response?.error) {
+        setToast(response.error)
+        return
+      }
+      setMessageText('')
+    })
+  }
+
   const leaveRoom = () => {
     socket.emit('leave_room', { roomId }, (response) => {
       if (response?.error) {
@@ -199,6 +243,8 @@ function App() {
       }
       setRoomId('')
       setParticipants([])
+      setMessages([])
+      setMessageText('')
       setPlayerVideoId('')
       setPlaybackState(null)
       setPlayerCommand(null)
@@ -252,6 +298,14 @@ function App() {
                   </span>
                   <span className="text-violet-300">{copied ? <Check size={15} /> : <Copy size={15} />}</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={copyInviteLink}
+                  className="secondary-button h-10 px-3 text-xs"
+                >
+                  {inviteCopied ? <Check size={15} /> : <Copy size={15} />}
+                  {inviteCopied ? 'Invite link copied' : 'Copy Invite Link'}
+                </button>
               </div>
             </div>
 
@@ -301,6 +355,48 @@ function App() {
                     </p>
                   )}
                 </div>
+                <section className="mt-6 border-t border-white/[0.07] pt-5" aria-label="Room chat">
+                  <div className="mb-3 flex items-center gap-2">
+                    <MessageCircle size={15} className="text-violet-300" />
+                    <h3 className="font-semibold text-white">Chat</h3>
+                  </div>
+                  <div className="max-h-72 space-y-3 overflow-y-auto rounded-xl bg-black/15 p-3" aria-live="polite">
+                    {messages.length === 0 ? (
+                      <p className="py-3 text-center text-xs text-slate-500">No messages yet. Say hello!</p>
+                    ) : (
+                      messages.map((message, index) => (
+                        <div key={`${message.timestamp}-${message.userId}-${index}`}>
+                          <div className="flex items-baseline justify-between gap-2">
+                            <p className="truncate text-xs font-semibold text-slate-200">{message.username}</p>
+                            <time className="shrink-0 text-[10px] text-slate-600">
+                              {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </time>
+                          </div>
+                          <p className="mt-1 break-words text-xs leading-5 text-slate-400">{message.text}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <form className="mt-3 flex gap-2" onSubmit={sendMessage}>
+                    <input
+                      className="text-field h-10 min-w-0 flex-1"
+                      type="text"
+                      maxLength={300}
+                      aria-label="Chat message"
+                      placeholder="Write a message..."
+                      value={messageText}
+                      onChange={(event) => setMessageText(event.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      className="primary-button h-10 w-10 shrink-0"
+                      aria-label="Send message"
+                      disabled={!messageText.trim()}
+                    >
+                      <Send size={15} />
+                    </button>
+                  </form>
+                </section>
                 {canApproveRequests && (
                   <div className="mt-6 border-t border-white/[0.07] pt-5">
                     <div className="mb-3 flex items-center justify-between">

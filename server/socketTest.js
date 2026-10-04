@@ -151,6 +151,8 @@ function waitForNoEvent(socket, event, durationMs) {
 async function main() {
   let hostSocket;
   let participantSocket;
+  let lateJoinerSocket;
+  let outsiderSocket;
 
   try {
     [hostSocket, participantSocket] = await Promise.all([
@@ -184,6 +186,79 @@ async function main() {
     }
 
     const controlPayload = { roomId };
+    outsiderSocket = await connectSocket();
+    const outsiderMessageError = await emitAndWaitForError(
+      outsiderSocket,
+      "send_message",
+      { ...controlPayload, text: "Not in the room" },
+    );
+    if (outsiderMessageError.message !== "You must be in the room to send a message.") {
+      throw new Error(`Unexpected outsider send_message error: ${outsiderMessageError.message}`);
+    }
+
+    const hostChatMessage = waitForEvent(hostSocket, "new_message");
+    const participantChatMessage = waitForEvent(participantSocket, "new_message");
+    const chatAck = await emitWithAck(hostSocket, "send_message", {
+      ...controlPayload,
+      text: "  Hello from the host  ",
+    });
+    const [hostMessage, participantMessage] = await Promise.all([
+      hostChatMessage,
+      participantChatMessage,
+    ]);
+    if (
+      chatAck.error
+      || hostMessage.text !== "Hello from the host"
+      || participantMessage.text !== hostMessage.text
+      || hostMessage.userId !== hostSocket.id
+      || hostMessage.username !== "Socket Test Host"
+      || hostMessage.role !== "Host"
+      || !Number.isFinite(hostMessage.timestamp)
+    ) {
+      throw new Error("Chat message was not trimmed or broadcast with the expected sender details.");
+    }
+
+    const maxLengthMessage = await emitWithAck(hostSocket, "send_message", {
+      ...controlPayload,
+      text: "x".repeat(300),
+    });
+    if (maxLengthMessage.error || maxLengthMessage.message?.text.length !== 300) {
+      throw new Error("Server did not accept a chat message of exactly 300 characters.");
+    }
+
+    for (let index = 0; index < 51; index += 1) {
+      const response = await emitWithAck(hostSocket, "send_message", {
+        ...controlPayload,
+        text: `history-${index}`,
+      });
+      if (response.error) {
+        throw new Error(`Could not store chat history message ${index}: ${response.error}`);
+      }
+    }
+    lateJoinerSocket = await connectSocket();
+    const lateJoinerSync = waitForEvent(lateJoinerSocket, "sync_state");
+    const lateJoinerJoin = await emitWithAck(lateJoinerSocket, "join_room", {
+      roomId,
+      username: "Socket Test Late Joiner",
+    });
+    const lateJoinerState = await lateJoinerSync;
+    if (
+      lateJoinerJoin.error
+      || lateJoinerState.messages?.length !== 50
+      || lateJoinerState.messages[0]?.text !== "history-1"
+      || lateJoinerState.messages[49]?.text !== "history-50"
+    ) {
+      throw new Error("New joiner did not receive the most recent 50 chat messages.");
+    }
+    const overlongMessage = await emitWithAck(hostSocket, "send_message", {
+      ...controlPayload,
+      text: "x".repeat(301),
+    });
+    if (!overlongMessage.error) {
+      throw new Error("Server accepted a chat message longer than 300 characters.");
+    }
+    console.log("Chat messages are validated, broadcast, limited to 50, and included for new joiners");
+
     const participantResolveError = await emitAndWaitForError(
       participantSocket,
       "resolve_request",
@@ -318,6 +393,8 @@ async function main() {
   } finally {
     hostSocket?.disconnect();
     participantSocket?.disconnect();
+    lateJoinerSocket?.disconnect();
+    outsiderSocket?.disconnect();
   }
 }
 

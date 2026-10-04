@@ -15,6 +15,7 @@ class Room {
     this.hostId = creator.id;
     this.participants = new Map();
     this.pendingRequests = new Map();
+    this.messages = [];
     this.videoState = {
       videoId: null,
       isPlaying: false,
