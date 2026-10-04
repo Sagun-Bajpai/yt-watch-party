@@ -14,6 +14,7 @@ class Room {
     this.roomId = roomId;
     this.hostId = creator.id;
     this.participants = new Map();
+    this.pendingRequests = new Map();
     this.videoState = {
       videoId: null,
       isPlaying: false,
@@ -45,6 +46,11 @@ class Room {
     }
 
     this.participants.delete(userId);
+    for (const [requestId, request] of this.pendingRequests) {
+      if (request.requesterId === userId) {
+        this.pendingRequests.delete(requestId);
+      }
+    }
 
     if (userId === this.hostId) {
       const nextHost = [...this.participants.values()].find(

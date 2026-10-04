@@ -32,6 +32,9 @@ function App() {
   const [connection, setConnection] = useState('connecting')
   const [toast, setToast] = useState('')
   const [copied, setCopied] = useState(false)
+  const [pendingRequests, setPendingRequests] = useState([])
+  const [requestStatus, setRequestStatus] = useState('')
+  const myRequestId = useRef('')
   const commandRevision = useRef(0)
 
   useEffect(() => {
@@ -49,6 +52,9 @@ function App() {
       setPlayerVideoId('')
       setPlaybackState(null)
       setPlayerCommand(null)
+      setPendingRequests([])
+      setRequestStatus('')
+      myRequestId.current = ''
     }
     const handleSync = (payload) => {
       setRoomId(payload.roomId)
@@ -76,7 +82,29 @@ function App() {
       setPlayerVideoId('')
       setPlaybackState(null)
       setPlayerCommand(null)
+      setPendingRequests([])
+      setRequestStatus('')
+      myRequestId.current = ''
       setToast('You were removed from the room.')
+    }
+    const handleRequestSent = (payload) => {
+      myRequestId.current = payload.requestId
+      setRequestStatus('Waiting for approval...')
+    }
+    const handleChangeRequested = (request) => {
+      setPendingRequests((current) => [
+        ...current.filter((item) => item.requestId !== request.requestId),
+        request,
+      ])
+    }
+    const handleRequestResolved = (resolution) => {
+      setPendingRequests((current) => current.filter(
+        (request) => request.requestId !== resolution.requestId,
+      ))
+      if (resolution.requestId === myRequestId.current) {
+        myRequestId.current = ''
+        setRequestStatus(resolution.approved ? 'Request approved.' : 'Request rejected or expired.')
+      }
     }
 
     socket.on('connect', () => setConnection('connected'))
@@ -94,6 +122,9 @@ function App() {
     socket.on('pause', handlePlayback('pause'))
     socket.on('seek', handlePlayback('seek'))
     socket.on('change_video', handlePlayback('change_video'))
+    socket.on('request_sent', handleRequestSent)
+    socket.on('change_requested', handleChangeRequested)
+    socket.on('request_resolved', handleRequestResolved)
     socket.connect()
 
     return () => {
@@ -109,6 +140,13 @@ function App() {
   }, [toast])
 
   const myUser = participants.find((participant) => participant.id === socket.id)
+  const canApproveRequests = myUser?.role === 'Host' || myUser?.role === 'Moderator'
+
+  const resolveRequest = (requestId, approve) => {
+    socket.emit('resolve_request', { roomId, requestId, approve }, (response) => {
+      if (response?.error) setToast(response.error)
+    })
+  }
 
   const handleCreateRoom = (event) => {
     event.preventDefault()
@@ -164,6 +202,9 @@ function App() {
       setPlayerVideoId('')
       setPlaybackState(null)
       setPlayerCommand(null)
+      setPendingRequests([])
+      setRequestStatus('')
+      myRequestId.current = ''
     })
   }
 
@@ -222,6 +263,7 @@ function App() {
                 videoId={playerVideoId}
                 playbackState={playbackState}
                 command={playerCommand}
+                requestStatus={requestStatus}
                 onError={setToast}
               />
               <aside className="panel rounded-3xl p-5 sm:p-6">
@@ -259,6 +301,52 @@ function App() {
                     </p>
                   )}
                 </div>
+                {canApproveRequests && (
+                  <div className="mt-6 border-t border-white/[0.07] pt-5">
+                    <div className="mb-3 flex items-center justify-between">
+                      <h3 className="font-semibold text-white">Pending requests</h3>
+                      <span className="text-xs text-slate-500">{pendingRequests.length}</span>
+                    </div>
+                    {pendingRequests.length === 0 ? (
+                      <p className="rounded-xl bg-white/[0.025] px-3 py-4 text-xs text-slate-500">
+                        No pending requests.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {pendingRequests.map((request) => (
+                          <div key={request.requestId} className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-3">
+                            <p className="text-sm font-medium text-slate-200">{request.requesterName}</p>
+                            <p className="mt-1 break-all text-xs text-slate-500">
+                              {request.type === 'change_video'
+                                ? `Video change: ${request.payload.videoId}`
+                                : request.type === 'play'
+                                  ? 'Play'
+                                  : request.type === 'pause'
+                                    ? 'Pause'
+                                    : `Seek to ${request.payload.currentTime}s`}
+                            </p>
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                type="button"
+                                className="primary-button h-9 px-3 text-xs"
+                                onClick={() => resolveRequest(request.requestId, true)}
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                className="secondary-button h-9 px-3 text-xs"
+                                onClick={() => resolveRequest(request.requestId, false)}
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </aside>
             </div>
           </section>

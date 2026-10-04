@@ -22,10 +22,20 @@ function extractVideoId(value) {
   return null
 }
 
-function Player({ socket, roomId, role, videoId, playbackState, command, onError }) {
+function Player({
+  socket,
+  roomId,
+  role,
+  videoId,
+  playbackState,
+  command,
+  requestStatus,
+  onError,
+}) {
   const canControl = role === 'Host' || role === 'Moderator'
   const [syncEnabled, setSyncEnabled] = useState(canControl)
   const [videoUrl, setVideoUrl] = useState('')
+  const [requestVideoUrl, setRequestVideoUrl] = useState('')
   const [playerReady, setPlayerReady] = useState(false)
   const playerRef = useRef(null)
   const loadedVideoIdRef = useRef('')
@@ -150,6 +160,8 @@ function Player({ socket, roomId, role, videoId, playbackState, command, onError
     }
   }
 
+  const requestPending = requestStatus === 'Waiting for approval...'
+
   const submitVideo = (event) => {
     event.preventDefault()
     const videoId = extractVideoId(videoUrl.trim())
@@ -159,6 +171,33 @@ function Player({ socket, roomId, role, videoId, playbackState, command, onError
     }
     socket.emit('change_video', { roomId, videoId })
     setVideoUrl('')
+  }
+
+  const submitVideoRequest = (event) => {
+    event.preventDefault()
+    const requestedVideoId = extractVideoId(requestVideoUrl.trim())
+    if (!requestedVideoId) {
+      onError('Enter a valid youtu.be or youtube.com/watch?v= link.')
+      return
+    }
+    socket.emit('request_change', {
+      roomId,
+      type: 'change_video',
+      payload: { videoId: requestedVideoId },
+    }, (response) => {
+      if (response?.error) onError(response.error)
+    })
+    setRequestVideoUrl('')
+  }
+
+  const requestPlayback = () => {
+    const type = playbackState?.isPlaying ? 'pause' : 'play'
+    const payload = type === 'play'
+      ? { currentTime: playbackState?.currentTime ?? 0 }
+      : {}
+    socket.emit('request_change', { roomId, type, payload }, (response) => {
+      if (response?.error) onError(response.error)
+    })
   }
 
   useEffect(() => {
@@ -238,6 +277,49 @@ function Player({ socket, roomId, role, videoId, playbackState, command, onError
             <Video size={15} /> Load video
           </button>
         </form>
+      )}
+
+      {!canControl && (
+        <div className="space-y-3 border-b border-white/[0.06] p-4 sm:px-5">
+          <div>
+            <h3 className="text-sm font-semibold text-white">Request play/pause</h3>
+            <p className="mt-1 text-xs text-slate-500">Ask a Host or Moderator to change playback.</p>
+          </div>
+          <button
+            type="button"
+            className="secondary-button h-10 px-4 text-xs"
+            onClick={requestPlayback}
+            disabled={requestPending}
+          >
+            <Play size={14} fill="currentColor" />
+            Request {playbackState?.isPlaying ? 'pause' : 'play'}
+          </button>
+          <form onSubmit={submitVideoRequest} className="flex gap-2">
+            <label className="sr-only" htmlFor="request-video-url">YouTube video link to request</label>
+            <div className="relative min-w-0 flex-1">
+              <Link2 className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={16} />
+              <input
+                id="request-video-url"
+                className="text-field h-11 pl-10"
+                type="url"
+                placeholder="Paste a YouTube link"
+                value={requestVideoUrl}
+                onChange={(event) => setRequestVideoUrl(event.target.value)}
+                disabled={requestPending}
+              />
+            </div>
+            <button
+              type="submit"
+              className="secondary-button h-11 shrink-0 px-4 text-xs"
+              disabled={requestPending}
+            >
+              Request video change
+            </button>
+          </form>
+          {requestStatus && (
+            <p role="status" className="text-xs text-violet-200">{requestStatus}</p>
+          )}
+        </div>
       )}
 
       <div className="player-frame relative aspect-video bg-black">

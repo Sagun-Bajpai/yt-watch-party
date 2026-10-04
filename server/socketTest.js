@@ -120,6 +120,34 @@ function emitAndWaitForEvent(
   });
 }
 
+function waitForEvent(socket, event) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off(event, handleEvent);
+      reject(new Error(`Did not receive ${event}.`));
+    }, ACK_TIMEOUT_MS);
+    const handleEvent = (payload) => {
+      clearTimeout(timeout);
+      resolve(payload);
+    };
+    socket.once(event, handleEvent);
+  });
+}
+
+function waitForNoEvent(socket, event, durationMs) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off(event, handleEvent);
+      resolve();
+    }, durationMs);
+    const handleEvent = () => {
+      clearTimeout(timeout);
+      reject(new Error(`Unexpectedly received ${event}.`));
+    };
+    socket.once(event, handleEvent);
+  });
+}
+
 async function main() {
   let hostSocket;
   let participantSocket;
@@ -156,6 +184,79 @@ async function main() {
     }
 
     const controlPayload = { roomId };
+    const participantResolveError = await emitAndWaitForError(
+      participantSocket,
+      "resolve_request",
+      { ...controlPayload, requestId: "not-a-request", approve: true },
+    );
+    if (participantResolveError.message !== "You do not have permission to control playback.") {
+      throw new Error(`Unexpected Participant resolve_request error: ${participantResolveError.message}`);
+    }
+    console.log(`Participant resolve_request error: ${participantResolveError.message}`);
+
+    const firstHostRequest = waitForEvent(hostSocket, "change_requested");
+    const firstRequestSent = waitForEvent(participantSocket, "request_sent");
+    const firstRequestAck = emitWithAck(participantSocket, "request_change", {
+      ...controlPayload,
+      type: "play",
+      payload: { currentTime: 12 },
+    });
+    const [playRequest, sentNotice, sentAck] = await Promise.all([
+      firstHostRequest,
+      firstRequestSent,
+      firstRequestAck,
+    ]);
+    if (sentAck.error || sentNotice.requestId !== playRequest.requestId) {
+      throw new Error("The request was not acknowledged consistently.");
+    }
+    if (
+      playRequest.requesterId !== participantSocket.id
+      || playRequest.requesterName !== "Socket Test Participant"
+      || playRequest.type !== "play"
+    ) {
+      throw new Error("The Host received an invalid change_requested payload.");
+    }
+    const approvedPlay = waitForEvent(participantSocket, "play");
+    const approveAck = await emitWithAck(hostSocket, "resolve_request", {
+      ...controlPayload,
+      requestId: playRequest.requestId,
+      approve: true,
+    });
+    const approvedState = await approvedPlay;
+    if (approveAck.error || !approvedState.isPlaying || approvedState.currentTime < 12) {
+      throw new Error("Approving the play request did not apply the playback change.");
+    }
+    console.log("Participant play request reached Host and approval applied");
+
+    const rejectedHostRequest = waitForEvent(hostSocket, "change_requested");
+    const rejectedRequestSent = waitForEvent(participantSocket, "request_sent");
+    const rejectedRequestAck = emitWithAck(participantSocket, "request_change", {
+      ...controlPayload,
+      type: "change_video",
+      payload: { videoId: "rejected-video" },
+    });
+    const [videoRequest, rejectedNotice, videoRequestAck] = await Promise.all([
+      rejectedHostRequest,
+      rejectedRequestSent,
+      rejectedRequestAck,
+    ]);
+    if (videoRequestAck.error || rejectedNotice.requestId !== videoRequest.requestId) {
+      throw new Error("The video change request was not acknowledged.");
+    }
+    const resolutionNotice = waitForEvent(participantSocket, "request_resolved");
+    const noVideoBroadcast = waitForNoEvent(participantSocket, "change_video", 350);
+    const rejectAck = await emitWithAck(hostSocket, "resolve_request", {
+      ...controlPayload,
+      requestId: videoRequest.requestId,
+      approve: false,
+    });
+    const rejectedResolution = await resolutionNotice;
+    await noVideoBroadcast;
+    if (rejectAck.error || rejectedResolution.requestId !== videoRequest.requestId || rejectedResolution.approved) {
+      throw new Error("Rejecting the video request did not notify the requester correctly.");
+    }
+    console.log("Rejected video request did not apply the change");
+
     for (const [event, payload] of [
       ["play", controlPayload],
       ["change_video", { ...controlPayload, videoId: "socket-test-video" }],

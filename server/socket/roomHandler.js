@@ -1,4 +1,8 @@
+const { randomUUID } = require("node:crypto");
 const User = require("../models/User");
+
+const REQUESTABLE_CHANGES = new Set(["play", "pause", "seek", "change_video"]);
+const REQUEST_TTL_MS = 60_000;
 
 function registerRoomHandlers(io, socket, roomManager) {
   if (!io || typeof io.to !== "function") {
@@ -54,6 +58,14 @@ function registerRoomHandlers(io, socket, roomManager) {
     }
   };
 
+  const assertIsParticipant = (room) => {
+    const user = room.participants.get(socket.id);
+    if (!user || user.role !== "Participant") {
+      throw new Error("Only Participants can request changes.");
+    }
+    return user;
+  };
+
   const assertIsHost = (room) => {
     if (room.hostId !== socket.id) {
       throw new Error("Only the host can perform this action.");
@@ -69,6 +81,114 @@ function registerRoomHandlers(io, socket, roomManager) {
       updatedAt: Date.now(),
     };
     return { roomId: room.roomId, ...room.getCurrentState() };
+  };
+
+  const validateChange = (type, payload) => {
+    if (!REQUESTABLE_CHANGES.has(type)) {
+      throw new Error("type must be play, pause, seek, or change_video.");
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new Error("A change payload is required.");
+    }
+
+    if (type === "play") {
+      const currentTime = payload.currentTime === undefined
+        ? undefined
+        : Number(payload.currentTime);
+      if (currentTime !== undefined && (!Number.isFinite(currentTime) || currentTime < 0)) {
+        throw new Error("currentTime must be a non-negative number.");
+      }
+      return { currentTime };
+    }
+    if (type === "seek") {
+      const currentTime = Number(payload.currentTime);
+      if (!Number.isFinite(currentTime) || currentTime < 0) {
+        throw new Error("currentTime must be a non-negative number.");
+      }
+      return { currentTime };
+    }
+    if (type === "change_video") {
+      if (typeof payload.videoId !== "string" || payload.videoId.trim() === "") {
+        throw new Error("A non-empty videoId is required.");
+      }
+      return { videoId: payload.videoId.trim() };
+    }
+    return {};
+  };
+
+  const applyChange = (room, type, payload) => {
+    const validatedPayload = validateChange(type, payload);
+    let changes;
+    if (type === "play") {
+      const currentTime = validatedPayload.currentTime === undefined
+        ? room.getCurrentState().currentTime
+        : validatedPayload.currentTime;
+      changes = { currentTime, isPlaying: true };
+    } else if (type === "pause") {
+      changes = {
+        currentTime: room.getCurrentState().currentTime,
+        isPlaying: false,
+      };
+    } else if (type === "seek") {
+      changes = { currentTime: validatedPayload.currentTime };
+    } else {
+      changes = {
+        videoId: validatedPayload.videoId,
+        currentTime: 0,
+        isPlaying: false,
+      };
+    }
+
+    const state = updatePlaybackState(room, changes);
+    io.to(room.roomId).emit(type, state);
+    return { state };
+  };
+
+  const getApprovers = (room) => [...room.participants.values()].filter(
+    (user) => user.role === "Host" || user.role === "Moderator",
+  );
+
+  const emitToApprovers = (room, event, payload, excludedSocketId) => {
+    for (const user of getApprovers(room)) {
+      if (user.socketId === excludedSocketId) {
+        continue;
+      }
+      const targetSocket = io.sockets?.sockets?.get(user.socketId);
+      targetSocket?.emit(event, payload);
+    }
+  };
+
+  const notifyRequestRemoved = (room, request, approved, notifyRequester = true) => {
+    const resolution = { requestId: request.requestId, approved };
+    if (notifyRequester) {
+      const requesterSocket = io.sockets?.sockets?.get(request.requesterId);
+      requesterSocket?.emit("request_resolved", resolution);
+    }
+    emitToApprovers(room, "request_resolved", resolution);
+  };
+
+  const removeRequestsForUser = (room, userId) => {
+    const removedRequests = [...room.pendingRequests.values()].filter(
+      (request) => request.requesterId === userId,
+    );
+    return removedRequests;
+  };
+
+  const publishRemovedRequests = (room, requests) => {
+    for (const request of requests) {
+      notifyRequestRemoved(room, request, false, false);
+    }
+  };
+
+  const sendPendingRequests = (room, userId) => {
+    const user = room.participants.get(userId);
+    if (!user || (user.role !== "Host" && user.role !== "Moderator")) {
+      return;
+    }
+    const targetSocket = io.sockets?.sockets?.get(user.socketId);
+    for (const request of room.pendingRequests.values()) {
+      targetSocket?.emit("change_requested", request);
+    }
   };
 
   socket.on("create_room", run((payload) => {
@@ -106,60 +226,89 @@ function registerRoomHandlers(io, socket, roomManager) {
   socket.on("play", run((payload) => {
     const room = getRoom(payload.roomId);
     assertCanControl(room);
-    const currentState = room.getCurrentState();
-    const currentTime = payload.currentTime === undefined
-      ? currentState.currentTime
-      : Number(payload.currentTime);
-    if (!Number.isFinite(currentTime) || currentTime < 0) {
-      throw new Error("currentTime must be a non-negative number.");
-    }
-    const state = updatePlaybackState(room, { currentTime, isPlaying: true });
-    io.to(room.roomId).emit("play", state);
-    return { state };
+    return applyChange(room, "play", payload);
   }));
 
   socket.on("pause", run((payload) => {
     const room = getRoom(payload.roomId);
     assertCanControl(room);
-    const state = updatePlaybackState(room, {
-      currentTime: room.getCurrentState().currentTime,
-      isPlaying: false,
-    });
-    io.to(room.roomId).emit("pause", state);
-    return { state };
+    return applyChange(room, "pause", payload);
   }));
 
   socket.on("seek", run((payload) => {
     const room = getRoom(payload.roomId);
     assertCanControl(room);
-    const currentTime = Number(payload.currentTime);
-    if (!Number.isFinite(currentTime) || currentTime < 0) {
-      throw new Error("currentTime must be a non-negative number.");
-    }
-    const state = updatePlaybackState(room, { currentTime });
-    io.to(room.roomId).emit("seek", state);
-    return { state };
+    return applyChange(room, "seek", payload);
   }));
 
   socket.on("change_video", run((payload) => {
     const room = getRoom(payload.roomId);
     assertCanControl(room);
-    if (typeof payload.videoId !== "string" || payload.videoId.trim() === "") {
-      throw new Error("A non-empty videoId is required.");
+    return applyChange(room, "change_video", payload);
+  }));
+
+  socket.on("request_change", run((payload) => {
+    const room = getRoom(payload.roomId);
+    const requester = assertIsParticipant(room);
+    if ([...room.pendingRequests.values()].some(
+      (request) => request.requesterId === requester.id,
+    )) {
+      throw new Error("You already have a pending request.");
     }
-    const state = updatePlaybackState(room, {
-      videoId: payload.videoId.trim(),
-      currentTime: 0,
-      isPlaying: false,
-    });
-    io.to(room.roomId).emit("change_video", state);
-    return { state };
+
+    const changePayload = validateChange(payload.type, payload.payload);
+    const request = {
+      requestId: randomUUID(),
+      requesterId: requester.id,
+      requesterName: requester.username,
+      type: payload.type,
+      payload: changePayload,
+      createdAt: Date.now(),
+    };
+    room.pendingRequests.set(request.requestId, request);
+    emitToApprovers(room, "change_requested", request);
+    socket.emit("request_sent", { requestId: request.requestId });
+
+    const expiryTimer = setTimeout(() => {
+      if (roomManager.getRoom(room.roomId) !== room) {
+        return;
+      }
+      const expiredRequest = room.pendingRequests.get(request.requestId);
+      if (!expiredRequest) {
+        return;
+      }
+      room.pendingRequests.delete(request.requestId);
+      notifyRequestRemoved(room, expiredRequest, false);
+    }, REQUEST_TTL_MS);
+    expiryTimer.unref?.();
+
+    return { requestId: request.requestId };
+  }));
+
+  socket.on("resolve_request", run((payload) => {
+    const room = getRoom(payload.roomId);
+    assertCanControl(room);
+    if (typeof payload.approve !== "boolean") {
+      throw new Error("approve must be a boolean.");
+    }
+    const request = room.pendingRequests.get(payload.requestId);
+    if (!request) {
+      throw new Error("This request no longer exists.");
+    }
+
+    room.pendingRequests.delete(request.requestId);
+    if (payload.approve) {
+      applyChange(room, request.type, request.payload);
+    }
+    notifyRequestRemoved(room, request, payload.approve);
+    return { requestId: request.requestId, approved: payload.approve };
   }));
 
   socket.on("assign_role", run((payload) => {
     const room = getRoom(payload.roomId);
     assertIsHost(room);
     room.assignRole(socket.id, payload.targetId, payload.newRole);
+    sendPendingRequests(room, payload.targetId);
     const participants = getParticipants(room);
     io.to(room.roomId).emit("role_assigned", {
       targetId: payload.targetId,
@@ -172,7 +321,9 @@ function registerRoomHandlers(io, socket, roomManager) {
   socket.on("remove_participant", run((payload) => {
     const room = getRoom(payload.roomId);
     assertIsHost(room);
+    const removedRequests = removeRequestsForUser(room, payload.targetId);
     const removed = room.removeByHost(socket.id, payload.targetId);
+    publishRemovedRequests(room, removedRequests);
     const targetSocket = io.sockets && io.sockets.sockets
       ? io.sockets.sockets.get(removed.socketId)
       : null;
@@ -193,6 +344,7 @@ function registerRoomHandlers(io, socket, roomManager) {
     const room = getRoom(payload.roomId);
     assertIsHost(room);
     room.transferHost(socket.id, payload.targetId);
+    sendPendingRequests(room, payload.targetId);
     const participants = getParticipants(room);
     io.to(room.roomId).emit("role_assigned", {
       targetId: payload.targetId,
@@ -204,7 +356,9 @@ function registerRoomHandlers(io, socket, roomManager) {
 
   socket.on("leave_room", run((payload) => {
     const room = getRoom(payload.roomId);
+    const removedRequests = removeRequestsForUser(room, socket.id);
     const user = roomManager.removeParticipant(room.roomId, socket.id);
+    publishRemovedRequests(room, removedRequests);
     socket.leave(room.roomId);
     const participants = getParticipants(room);
     io.to(room.roomId).emit("user_left", {
@@ -222,7 +376,9 @@ function registerRoomHandlers(io, socket, roomManager) {
       }
 
       try {
+        const removedRequests = removeRequestsForUser(room, user.id);
         roomManager.removeParticipant(room.roomId, user.id);
+        publishRemovedRequests(room, removedRequests);
         const participants = getParticipants(room);
         io.to(room.roomId).emit("user_left", {
           userId: user.id,
