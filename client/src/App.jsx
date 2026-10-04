@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Check, Clapperboard, Copy, MessageCircle, Radio, Send, Users, Video } from 'lucide-react'
+import { ArrowLeft, Check, Clapperboard, Copy, MessageCircle, MoreHorizontal, Radio, Send, Users, Video } from 'lucide-react'
 import { io } from 'socket.io-client'
 import './App.css'
 import Player from './Player.jsx'
@@ -44,6 +44,7 @@ function App() {
   const [inviteCopied, setInviteCopied] = useState(false)
   const [pendingRequests, setPendingRequests] = useState([])
   const [requestStatus, setRequestStatus] = useState('')
+  const [openParticipantMenuId, setOpenParticipantMenuId] = useState('')
   const myRequestId = useRef('')
   const commandRevision = useRef(0)
 
@@ -66,6 +67,7 @@ function App() {
       setPlayerCommand(null)
       setPendingRequests([])
       setRequestStatus('')
+      setOpenParticipantMenuId('')
       myRequestId.current = ''
     }
     const handleSync = (payload) => {
@@ -102,6 +104,7 @@ function App() {
       setPlayerCommand(null)
       setPendingRequests([])
       setRequestStatus('')
+      setOpenParticipantMenuId('')
       myRequestId.current = ''
       setToast('You were removed from the room.')
     }
@@ -159,7 +162,18 @@ function App() {
   }, [toast])
 
   const myUser = participants.find((participant) => participant.id === socket.id)
+  const isHost = myUser?.role === 'Host'
   const canApproveRequests = myUser?.role === 'Host' || myUser?.role === 'Moderator'
+
+  const runParticipantAction = (event, payload) => {
+    socket.emit(event, { roomId, ...payload }, (response) => {
+      if (response?.error) {
+        setToast(response.error)
+        return
+      }
+      setOpenParticipantMenuId('')
+    })
+  }
 
   const resolveRequest = (requestId, approve) => {
     socket.emit('resolve_request', { roomId, requestId, approve }, (response) => {
@@ -250,6 +264,7 @@ function App() {
       setPlayerCommand(null)
       setPendingRequests([])
       setRequestStatus('')
+      setOpenParticipantMenuId('')
       myRequestId.current = ''
     })
   }
@@ -346,7 +361,75 @@ function App() {
                           <p className="mt-0.5 text-xs text-slate-500">{participant.role === 'Host' ? 'Party host' : participant.role === 'Moderator' ? 'Can control playback' : 'Watching'}</p>
                         </div>
                       </div>
-                      <RoleBadge role={participant.role} />
+                      <div className="flex shrink-0 items-center gap-2">
+                        <RoleBadge role={participant.role} />
+                        {isHost && participant.id !== socket.id && (
+                          <div className="relative">
+                            <button
+                              type="button"
+                              className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-white/[0.08] hover:text-white"
+                              aria-label={`Actions for ${participant.username}`}
+                              aria-haspopup="menu"
+                              aria-expanded={openParticipantMenuId === participant.id}
+                              onClick={() => setOpenParticipantMenuId(
+                                openParticipantMenuId === participant.id ? '' : participant.id,
+                              )}
+                            >
+                              <MoreHorizontal size={18} />
+                            </button>
+                            {openParticipantMenuId === participant.id && (
+                              <div
+                                className="absolute right-0 top-full z-20 mt-1 min-w-44 rounded-xl border border-white/10 bg-slate-900 p-1 shadow-xl"
+                                role="menu"
+                                aria-label={`Actions for ${participant.username}`}
+                              >
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="w-full rounded-lg px-3 py-2 text-left text-xs text-slate-200 transition hover:bg-white/[0.08]"
+                                  onClick={() => runParticipantAction('assign_role', {
+                                    targetId: participant.id,
+                                    newRole: 'Moderator',
+                                  })}
+                                >
+                                  Make Moderator
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="w-full rounded-lg px-3 py-2 text-left text-xs text-slate-200 transition hover:bg-white/[0.08]"
+                                  onClick={() => runParticipantAction('assign_role', {
+                                    targetId: participant.id,
+                                    newRole: 'Participant',
+                                  })}
+                                >
+                                  Make Participant
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="w-full rounded-lg px-3 py-2 text-left text-xs text-slate-200 transition hover:bg-white/[0.08]"
+                                  onClick={() => runParticipantAction('transfer_host', {
+                                    targetId: participant.id,
+                                  })}
+                                >
+                                  Transfer Host
+                                </button>
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  className="w-full rounded-lg px-3 py-2 text-left text-xs text-rose-300 transition hover:bg-rose-400/10"
+                                  onClick={() => runParticipantAction('remove_participant', {
+                                    targetId: participant.id,
+                                  })}
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   ))}
                   {participants.length === 0 && (
