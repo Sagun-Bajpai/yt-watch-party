@@ -13,7 +13,7 @@ Built as the Web3task intern assignment.
 | **Source code** | https://github.com/Sagun-Bajpai/yt-watch-party |
 | **Demo video** | _Add your video link here_ |
 
-> ⚠️ **Note:** The backend runs on Render's free tier, which goes to sleep after inactivity. The **first load can take up to ~50 seconds**. If the status shows "Connecting", wait a moment and refresh.
+
 
 
 ### Screenshots
