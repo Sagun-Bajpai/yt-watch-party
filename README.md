@@ -17,10 +17,13 @@ Built as the Web3task intern assignment.
 
 ### Screenshots
 
-<!-- Add 3 screenshots to a docs/screenshots folder, then keep these lines. Delete this section if you have no screenshots. -->
+
 | Lobby | Host view | Participant view |
 |---|---|---|
-| ![Lobby](docs/screenshots/lobby.png) | ![Host](docs/screenshots/host.png) | ![Participant](docs/screenshots/participant.png) |
+| ![Lobby](<img width="1436" height="784" alt="Screenshot 2026-10-05 192723" src="https://github.com/user-attachments/assets/e5d84cef-2009-4a1a-843d-4278c2c5d05e" />
+) | ![Host](<img width="1440" height="780" alt="Screenshot 2026-10-05 192846" src="https://github.com/user-attachments/assets/452aa49c-d5c3-4dad-94ff-bf7b8bd204f2" />
+) | ![Participant](<img width="1440" height="782" alt="Screenshot 2026-10-05 193004" src="https://github.com/user-attachments/assets/0dd8335f-b7ae-43f1-9f06-d1cd78df01e8" />
+) |
 
 ---
 
