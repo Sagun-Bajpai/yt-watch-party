@@ -16,7 +16,7 @@ Built as the Web3task intern assignment.
 
 
 
-### Screenshots
+### 📸 Screenshots
 
 | Lobby | Host view | Participant view |
 |---|---|---|
