@@ -11,7 +11,7 @@ Built as the Web3task intern assignment.
 | **Live app (Frontend, Vercel)** | https://yt-watch-party-flax.vercel.app |
 | **Backend (Render)** | https://yt-watch-party-gtk9.onrender.com |
 | **Source code** | https://github.com/Sagun-Bajpai/yt-watch-party |
-| **Demo video** | https://youtu.be/VIDEO_ID |
+| **Demo video** | https://www.youtube.com/watch?v=WHTBXnK-Z3o |
 
 
 
