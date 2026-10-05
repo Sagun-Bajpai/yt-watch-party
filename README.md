@@ -20,7 +20,7 @@ Built as the Web3task intern assignment.
 
 | Lobby | Host view | Participant view |
 |---|---|---|
-| ![Lobby](https://github.com/user-attachments/assets/e5d84cef-2009-4a1a-843d-4278c2c5d05e) | ![Host](https://github.com/user-attachments/assets/452aa49c-d5c3-4dad-94ff-bf7b8bd204f2) | ![Participant](https://github.com/user-attachments/assets/0dd8335f-b7ae-43f1-9f06-d1cd78df01e8) |
+| ![Lobby](https://github.com/user-attachments/assets/e5d84cef-2009-4a1a-843d-4278c2c5d05e) | ![Host]("https://github.com/user-attachments/assets/8087673d-f769-4cb9-bde1-61b98747ad5b") | ![Participant]("https://github.com/user-attachments/assets/60c4c2f0-96bf-44c2-9292-0936f0e3f8df") |
 
 ---
 
